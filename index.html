@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Tamy Game 💜</title>
+<style>
+  body { margin:0; background:#000; overflow:hidden; font-family: monospace; }
+  canvas { display:block; margin:0 auto; background:#000; touch-action:none; }
+
+  #hud{
+    position:fixed; top:10px; left:10px; right:10px;
+    display:flex; justify-content:space-between; gap:10px;
+    color:#fff; font-size:14px; text-shadow:1px 1px 2px #000;
+    pointer-events:none;
+  }
+  #controls{
+    position:fixed; bottom:10px; left:0; right:0;
+    display:flex; justify-content:space-around; gap:8px;
+    padding:0 8px;
+  }
+  button{
+    font-size:22px; padding:14px 16px;
+    background:#1a1a2e; color:white; border:none; border-radius:12px;
+  }
+
+  #end{
+    position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background: rgba(0,0,0,0.88); color:white; padding:16px;
+  }
+  #end .box{
+    max-width: 560px; width: 94%;
+    background: rgba(10,10,26,0.95);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 16px;
+    padding: 16px;
+    line-height: 1.45;
+    font-size: 16px;
+  }
+  #end h1{ margin:0 0 10px 0; font-size: 18px; }
+  #end p{ margin:0; white-space: pre-wrap; }
+  #cakeWrap{ margin-top:14px; text-align:center; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div id="pInfo">HP: 100</div>
+  <div id="bInfo"></div>
+</div>
+
+<canvas id="game"></canvas>
+
+<div id="controls">
+  <button id="left">◀</button>
+  <button id="jump">▲</button>
+  <button id="attack">⚔</button>
+  <button id="right">▶</button>
+</div>
+
+<div id="end">
+  <div class="box">
+    <h1>💜 Feliz aniversário, Tamy 💜</h1>
+    <p id="msg"></p>
+    <div id="cakeWrap">
+      <canvas id="cakeCanvas" width="240" height="180"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   1) CANVAS / RESIZE
+========================================================= */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+function resize(){
+  canvas.width = Math.min(window.innerWidth, 520);
+  canvas.height = window.innerHeight;
+  ctx.imageSmoothingEnabled = false; // pixel art sem blur
+}
+window.addEventListener("resize", resize);
+resize();
+
+/* =========================================================
+   2) LOAD IMAGES
+========================================================= */
+function loadImage(src){
+  return new Promise((resolve,reject)=>{
+    const img = new Image();
+    img.onload = ()=>resolve(img);
+    img.onerror = ()=>reject(new Error("Falha ao carregar: " + src));
+    img.src = src;
+  });
+}
+
+const IMG = {};
+const SPR = {}; // sprites do player
+
+async function boot(){
+  // IMPORTANTÍSSIMO: nomes têm que bater com seus arquivos em assets/
+  const files = {
+    bg: "assets/bg_castlevania.png",
+    estruturas: "assets/estruturas.png",
+    enemy: "assets/enemy_tooth.png",
+    boss: "assets/boss_rasmisin.png",
+    cupcake: "assets/cupcake.png",
+    fuba: "assets/fuba.png",
+    cake: "assets/cake_final.png",
+
+    idle: "assets/player_idle.png",
+    run1: "assets/player_run1.png",
+    run2: "assets/player_run2.png",
+    jump: "assets/player_jump.png",
+    attack: "assets/player_attack.png",
+  };
+
+  try{
+    // carrega tudo
+    const entries = await Promise.all(Object.entries(files).map(async ([k,v])=>{
+      const im = await loadImage(v);
+      return [k, im];
+    }));
+
+    for(const [k, im] of entries){
+      if(["idle","run1","run2","jump","attack"].includes(k)) SPR[k] = im;
+      else IMG[k] = im;
+    }
+
+    // começa o loop
+    requestAnimationFrame(loop);
+
+  }catch(e){
+    alert(
+      "Erro carregando imagens.\n" +
+      "1) Confira se existe a pasta assets/\n" +
+      "2) Confira os nomes dos arquivos (minúsculo, sem espaço)\n\n" +
+      e.message
+    );
+  }
+}
+boot();
+
+/* =========================================================
+   3) MUSIC 8-BIT (GERADA)
+========================================================= */
+let audioCtx, playing=false;
+
+function startMusic(){
+  if(playing) return;
+  playing = true;
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  const tempo = 150;
+  const beat = 60/tempo;
+
+  function sq(freq, t, d, vol=0.10){
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type="square";
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t+d);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t); o.stop(t+d);
+  }
+  function noise(t, d, vol=0.03){
+    const size = Math.floor(audioCtx.sampleRate * d);
+    const buf = audioCtx.createBuffer(1, size, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for(let i=0;i<size;i++) data[i] = (Math.random()*2-1);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t+d);
+    src.connect(g); g.connect(audioCtx.destination);
+    src.start(t); src.stop(t+d);
+  }
+
+  const riff = [110,110,165,110,196,165,110,220]; // metal NES
+  function bar(t0){
+    for(let i=0;i<riff.length;i++){
+      sq(riff[i], t0 + i*beat, beat*0.95, 0.10);
+      if(i%2===0) noise(t0 + i*beat, beat*0.20, 0.025);
+    }
+  }
+  function loopMusic(){
+    const t0 = audioCtx.currentTime + 0.02;
+    bar(t0);
+    setTimeout(loopMusic, riff.length*beat*1000);
+  }
+  loopMusic();
+}
+
+// celular exige toque
+document.addEventListener("touchstart", startMusic, {passive:true});
+document.addEventListener("click", startMusic);
+
+/* =========================================================
+   4) WORLD / PHYSICS
+========================================================= */
+const hudP = document.getElementById("pInfo");
+const hudB = document.getElementById("bInfo");
+
+// mundo linear ~ 4 minutos (ajuste se quiser)
+const world = {
+  w: 2600,
+  groundY: 0
+};
+
+const player = {
+  x: 80,
+  y: 0,
+  w: 56,
+  h: 80,
+  vx: 0,
+  vy: 0,
+  onGround: false,
+  facing: 1,
+  hp: 100,
+  damage: 50
+};
+
+let camX = 0;
+let state = "play";
+
+// animação
+let animFrame = 0;
+let animTimer = 0;
+let attackTimer = 0;
+
+// plataformas (retângulos invisíveis para colisão)
+// y é relativo ao chão (negativo = mais alto)
+const platforms = [
+  {x:0,   y:0,     w:world.w, h:60},    // chão
+  {x:320, y:-90,   w:140,     h:18},
+  {x:540, y:-140,  w:140,     h:18},
+  {x:760, y:-90,   w:140,     h:18},
+  {x:980, y:-120,  w:180,     h:18},
+  {x:1240,y:-70,   w:150,     h:18},
+  {x:1460,y:-110,  w:170,     h:18},
+  {x:1700,y:-150,  w:200,     h:18},
+  {x:2100,y:-90,   w:300,     h:18},   // plataforma do boss
+];
+
+function setGround(){
+  world.groundY = canvas.height - 140;
+  platforms.forEach(p=>{
+    if(p._init) return;
+    p._init = true;
+    p.baseY = p.y;
+  });
+  platforms.forEach(p=>{
+    p.y = world.groundY + p.baseY;
+  });
+  enemies.forEach(e=>{
+    e.y = world.groundY - e.h;
+  });
+  boss.y = world.groundY - boss.h;
+}
+window.addEventListener("resize", setGround);
+
+/* =========================================================
+   5) ENEMIES + BOSS
+========================================================= */
+let enemies = [
+  {x:600,  y:0, w:50, h:50, hp:100, alive:true},
+  {x:1080, y:0, w:50, h:50, hp:100, alive:true},
+  {x:1560, y:0, w:50, h:50, hp:100, alive:true},
+];
+
+const boss = {
+  x: 2320,
+  y: 0,
+  w: 140,
+  h: 140,
+  hp: 400,
+  active:false,
+  alive:true,
+  projectiles: [],
+  cd: 0
+};
+
+function overlap(a,b){
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+/* =========================================================
+   6) CONTROLS (touch + teclado pra testar no PC)
+========================================================= */
+function pressLeft(){ player.vx = -4.5; player.facing = -1; }
+function pressRight(){ player.vx = 4.5; player.facing = 1; }
+function stopMove(){ player.vx = 0; }
+
+document.getElementById("left").addEventListener("touchstart",(e)=>{e.preventDefault(); pressLeft();},{passive:false});
+document.getElementById("right").addEventListener("touchstart",(e)=>{e.preventDefault(); pressRight();},{passive:false});
+document.getElementById("left").addEventListener("touchend",(e)=>{e.preventDefault(); stopMove();},{passive:false});
+document.getElementById("right").addEventListener("touchend",(e)=>{e.preventDefault(); stopMove();},{passive:false});
+
+document.getElementById("jump").addEventListener("touchstart",(e)=>{
+  e.preventDefault();
+  if(player.onGround) player.vy = -14;
+},{passive:false});
+
+document.getElementById("attack").addEventListener("touchstart",(e)=>{
+  e.preventDefault();
+  attackTimer = 10; // duração do golpe
+},{passive:false});
+
+// teclado (pra você testar no PC)
+window.addEventListener("keydown",(e)=>{
+  if(e.key==="ArrowLeft") pressLeft();
+  if(e.key==="ArrowRight") pressRight();
+  if(e.key==="ArrowUp" && player.onGround) player.vy = -14;
+  if(e.key===" " ) attackTimer = 10;
+});
+window.addEventListener("keyup",(e)=>{
+  if(e.key==="ArrowLeft" || e.key==="ArrowRight") stopMove();
+});
+
+/* =========================================================
+   7) UPDATE
+========================================================= */
+function applyPhysics(){
+  const GRAV = 0.8;
+
+  player.vy += GRAV;
+  player.x += player.vx;
+  player.y += player.vy;
+
+  // limites
+  player.x = Math.max(0, Math.min(world.w - player.w, player.x));
+
+  player.onGround = false;
+
+  // colisão com plataformas
+  for(const p of platforms){
+    const a = {x:player.x, y:player.y, w:player.w, h:player.h};
+    const b = {x:p.x, y:p.y, w:p.w, h:p.h};
+    if(overlap(a,b)){
+      const prevY = player.y - player.vy;
+      // caiu por cima
+      if(prevY + player.h <= p.y + 10){
+        player.y = p.y - player.h;
+        player.vy = 0;
+        player.onGround = true;
+      } else {
+        // empurra lateral
+        if(player.x + player.w/2 < p.x + p.w/2) player.x = p.x - player.w;
+        else player.x = p.x + p.w;
+      }
+    }
+  }
+
+  // câmera segue
+  camX = Math.max(0, Math.min(world.w - canvas.width, player.x - canvas.width*0.35));
+}
+
+function hitboxAttack(){
+  if(attackTimer <= 0) return null;
+  return {
+    x: player.facing===1 ? player.x + player.w - 6 : player.x - 26,
+    y: player.y + 22,
+    w: 28,
+    h: 18
+  };
+}
+
+function updateEnemies(){
+  if(attackTimer > 0) attackTimer--;
+
+  // ativa boss ao chegar perto
+  if(!boss.active && player.x > 2050) boss.active = true;
+
+  const hb = hitboxAttack();
+
+  // inimigos normais (100 hp)
+  for(const e of enemies){
+    if(!e.alive) continue;
+    if(hb && overlap(hb, e)){
+      e.hp -= player.damage; // 50
+      if(e.hp <= 0) e.alive = false;
+    }
+  }
+
+  // boss (400 hp) + projéteis
+  if(boss.active && boss.alive){
+    if(hb && overlap(hb, boss)){
+      boss.hp -= player.damage;
+      if(boss.hp <= 0){
+        boss.alive = false;
+        endGame();
+      }
+    }
+
+    boss.cd -= 1;
+    if(boss.cd <= 0){
+      boss.cd = 40;
+      const type = Math.random() < 0.5 ? "cupcake" : "fuba";
+      boss.projectiles.push({
+        x: boss.x + boss.w/2,
+        y: boss.y + 40,
+        w: 26, h: 26,
+        vx: (player.x < boss.x ? -5.5 : 5.5),
+        vy: -3.5,
+        type
+      });
+    }
+
+    for(const pr of boss.projectiles){
+      pr.vy += 0.25;
+      pr.x += pr.vx;
+      pr.y += pr.vy;
+
+      if(overlap(pr, player)){
+        player.hp -= 8; // fácil de vencer
+        pr.dead = true;
+        if(player.hp <= 0){
+          // respawn fácil
+          player.hp = 100;
+          player.x = 1900;
+          player.y = world.groundY - player.h;
+          boss.projectiles = [];
+        }
+      }
+      if(pr.y > canvas.height + 200) pr.dead = true;
+    }
+    boss.projectiles = boss.projectiles.filter(p=>!p.dead);
+  }
+
+  hudP.textContent = "HP: " + player.hp;
+  hudB.textContent = boss.active ? ("rasmisin: " + Math.max(0,boss.hp)) : "";
+}
+
+/* =========================================================
+   8) DRAW (cenário movendo + parallax)
+========================================================= */
+function pickPlayerSprite(){
+  // prioridade: ataque > pulo > corrida > idle
+  if(attackTimer > 0) return SPR.attack;
+  if(!player.onGround) return SPR.jump;
+
+  if(player.vx !== 0){
+    animTimer++;
+    if(animTimer > 10){
+      animFrame = (animFrame + 1) % 2;
+      animTimer = 0;
+    }
+    return animFrame === 0 ? SPR.run1 : SPR.run2;
+  }
+
+  return SPR.idle;
+}
+
+function draw(){
+  // fundo com parallax (move mais lento que o chão)
+  const bgX = -((camX * 0.2) % canvas.width);
+  ctx.drawImage(IMG.bg, bgX, 0, canvas.width, canvas.height);
+  ctx.drawImage(IMG.bg, bgX + canvas.width, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  ctx.translate(-camX, 0);
+
+  // estruturas (chão / castelo) — fica “no mundo”, então move com a câmera
+  // desenha perto do chão: ajuste fino do Y se quiser
+  const estruturasY = world.groundY - (IMG.estruturas.height - 120);
+  ctx.drawImage(IMG.estruturas, 0, estruturasY);
+
+  // plataformas invisíveis (debug): se quiser ver, descomente
+  // ctx.fillStyle = "rgba(255,255,255,0.10)";
+  // for(const p of platforms){ ctx.fillRect(p.x,p.y,p.w,p.h); }
+
+  // inimigos
+  for(const e of enemies){
+    if(!e.alive) continue;
+    ctx.drawImage(IMG.enemy, e.x, e.y, e.w, e.h);
+  }
+
+  // boss
+  if(boss.active && boss.alive){
+    ctx.drawImage(IMG.boss, boss.x, boss.y, boss.w, boss.h);
+  }
+
+  // projéteis
+  if(boss.active){
+    for(const pr of boss.projectiles){
+      const img = pr.type==="cupcake" ? IMG.cupcake : IMG.fuba;
+      ctx.drawImage(img, pr.x, pr.y, pr.w, pr.h);
+    }
+  }
+
+  // player sprite + flip horizontal se estiver virando pra esquerda
+  const ps = pickPlayerSprite();
+  ctx.save();
+  if(player.facing === -1){
+    ctx.translate(player.x + player.w, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(ps, 0, player.y, player.w, player.h);
+  } else {
+    ctx.drawImage(ps, player.x, player.y, player.w, player.h);
+  }
+  ctx.restore();
+
+  // hitbox visual do ataque (opcional)
+  if(attackTimer > 0){
+    const hb = hitboxAttack();
+    ctx.fillStyle = "rgba(220,220,220,0.65)";
+    ctx.fillRect(hb.x, hb.y, hb.w, hb.h);
+  }
+
+  ctx.restore();
+}
+
+/* =========================================================
+   9) END SCREEN
+========================================================= */
+function endGame(){
+  state = "end";
+
+  const msg =
+`Parabéns pelo seu aniversário, esse é o único presente que pensei em dar para uma das pessoas mais importante da minha vida.
+Você está passando mais um ano, mais um ano tenho prazer de te conhecer, de falar, jogar, conversar, me estressar e de me alegrar.
+Você não é só uma amiga, mas você é um dos melhores seres humanos que conheço.
+Espero que a partir daqui seu futuro seja apenas sucesso, você é merecedora de tudo.
+Obrigado por tudo, por ser a melhor pessoa desse mundo. 💜
+Feliz aniversário Tamy 💜.`;
+
+  document.getElementById("msg").textContent = msg;
+  document.getElementById("end").style.display = "flex";
+
+  const cc = document.getElementById("cakeCanvas");
+  const cctx = cc.getContext("2d");
+  cctx.imageSmoothingEnabled = false;
+  cctx.clearRect(0,0,cc.width,cc.height);
+  cctx.drawImage(IMG.cake, 20, 10, 200, 160);
+}
+
+/* =========================================================
+   10) LOOP
+========================================================= */
+function loop(){
+  if(Object.keys(IMG).length === 0 || Object.keys(SPR).length === 0){
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  if(world.groundY === 0) setGround();
+
+  if(state === "play"){
+    applyPhysics();
+    updateEnemies();
+    draw();
+  }
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
